@@ -128,7 +128,7 @@ class SSLModuleConnection(APNSConnectionContext):
         self.socket = socket.socket()
         self.connectionContext = self.ssl_module.wrap_socket(
                     self.socket,
-                    ssl_version = self.ssl_module.PROTOCOL_SSLv3,
+                    ssl_version = self.ssl_module.PROTOCOL_TLSv1,
                     certfile = self.certificate
                 )
 
