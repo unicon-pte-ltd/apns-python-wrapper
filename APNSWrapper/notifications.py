@@ -212,7 +212,7 @@ class APNSNotification(object):
 
     deviceToken = None
 
-    maxPayloadLength = 256
+    maxPayloadLength = 2048
     deviceTokenLength = 32
 
     properties = None
