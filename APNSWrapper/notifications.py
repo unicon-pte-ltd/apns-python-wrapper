@@ -9,17 +9,43 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-import struct
+from __init__ import *
+from apnsexceptions import *
 import base64
 import binascii
-
-from __init__ import *
 from connection import *
-from apnsexceptions import *
+import logging
+import select
+from socket import error as socket_error
+import struct
+import threading
+import time
 from utils import _doublequote
 
 NULL = 'null'
+
+RESPONSE_NO_ERRORS_ENCOUNTERED = 0
+RESPONSE_PROCESSING_ERROR = 1
+RESPONSE_MISSING_DEVICE_TOKEN = 2
+RESPONSE_MISSING_TOPIC = 3
+RESPONSE_MISSING_PAYLOAD = 4
+RESPONSE_INVALID_TOKEN_SIZE = 5
+RESPONSE_INVALID_TOPIC_SIZE = 6
+RESPONSE_INVALID_PAYLOAD_SIZE = 7
+RESPONSE_INVALID_TOKEN = 8
+RESPONSE_SHUTDOWN = 10
+RESPONSE_UNKNOWN = 255
+
+WAIT_READ_TIMEOUT_SEC = 10
+ERROR_RESPONSE_LENGTH = 6
+ERROR_RESPONSE_FORMAT = (
+    '!'   # network big-endian
+    'B'   # command
+    'B'   # status
+    'I'   # identifier
+)
+
+_logger = logging.getLogger(__name__)
 
 class APNSAlert(object):
     """
@@ -194,6 +220,20 @@ class APNSNotificationWrapper(object):
         apnsConnection.connect(apnsHost, self.apnsPort)
 
         apnsConnection.write(message)
+
+        rlist, _, _ = select.select([apnsConnection.context().connectionContext], [], [], WAIT_READ_TIMEOUT_SEC)
+        error = None
+        if len(rlist) > 0:
+            data = self.apnsConnection.read(blockSize=ERROR_RESPONSE_LENGTH)
+            if len(data) == ERROR_RESPONSE_LENGTH:
+                command, status, identifier = struct.unpack(ERROR_RESPONSE_FORMAT, data)
+                if command == 8:
+                    error = (status, identifier)
+                    _logger.info("got error response from APNs:" + str(error))
+                    # TODO: resend
+
+            if len(data) == 0:
+                _logger.warning("read socket got 0 bytes data")
 
         apnsConnection.close()
 
