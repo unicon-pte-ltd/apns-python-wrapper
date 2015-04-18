@@ -9,18 +9,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
+from apnsexceptions import *
 import os
 import socket
 import subprocess
-
-from apnsexceptions import *
+import threading
 from utils import *
 
 class APNSConnectionContext(object):
     certificate = None
     def __init__(self, certificate = None):
         self.certificate = certificate
+        self.send_lock = threading.RLock()
     def connect(self, host, port):
         raise APNSNotImplementedMethod, "APNSConnectionContext.connect ssl method not implemented in context"
     def write(data = None):
@@ -46,6 +46,7 @@ class OpenSSLCommandLine(APNSConnectionContext):
         self.certificate = certificate
         self.executable = executable
         self.debug = debug
+        self.send_lock = threading.RLock()
 
     def connect(self, host, port):
         self.host = host
@@ -117,6 +118,7 @@ class SSLModuleConnection(APNSConnectionContext):
         self.connectionContext = None
         self.certificate = certificate
         self.ssl_module = ssl_module
+        self.send_lock = threading.RLock()
 
     def context(self):
         """
@@ -183,6 +185,7 @@ class APNSConnection(APNSConnectionContext):
                         debug = False):
         self.connectionContext = None
         self.debug = debug
+        self.send_lock = threading.RLock()
 
         if not os.path.exists(str(certificate)):
             raise APNSCertificateNotFoundError, "Apple Push Notification Service Certificate file %s not found." % str(certificate)

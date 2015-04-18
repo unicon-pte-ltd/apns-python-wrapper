@@ -9,17 +9,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-import struct
+from __init__ import *
+from apnsexceptions import *
 import base64
 import binascii
-
-from __init__ import *
 from connection import *
-from apnsexceptions import *
+import logging
+import select
+from socket import error as socket_error
+import struct
+import threading
+import time
 from utils import _doublequote
 
 NULL = 'null'
+
+_logger = logging.getLogger(__name__)
 
 class APNSAlert(object):
     """
@@ -148,7 +153,7 @@ class APNSNotificationWrapper(object):
                             force_ssl_command = self.force_ssl_command, debug = self.debug_ssl)
         self.sandbox = sandbox
         self.payloads = []
-
+        self.error_response_handler_worker = None
 
     def append(self, payload = None):
         """Append payload to wrapper"""
@@ -193,11 +198,86 @@ class APNSNotificationWrapper(object):
 
         apnsConnection.connect(apnsHost, self.apnsPort)
 
-        apnsConnection.write(message)
+        if (not self.error_response_handler_worker or not self.error_response_handler_worker.is_alive()):
+            _logger.debug("initialized error-response handler worker")
+            apnsConnection.send_lock = threading.RLock()
+            self.error_response_handler_worker = self.ErrorResponseHandlerWorker(apnsConnection=apnsConnection)
+            self.error_response_handler_worker.start()
+            TIMEOUT_SEC = 10
+            for _ in xrange(TIMEOUT_SEC):
+                if self.error_response_handler_worker.is_alive():
+                    _logger.debug("error response handler worker is running")
+                    return
+                time.sleep(1)
+            _logger.warning("error response handler worker is not started after %s secs" % TIMEOUT_SEC)
 
-        apnsConnection.close()
+        with self.send_lock:
+            apnsConnection.write(message)
 
         return True
+
+    class ErrorResponseHandlerWorker(threading.Thread):
+        RESPONSE_NO_ERRORS_ENCOUNTERED = 0
+        RESPONSE_PROCESSING_ERROR = 1
+        RESPONSE_MISSING_DEVICE_TOKEN = 2
+        RESPONSE_MISSING_TOPIC = 3
+        RESPONSE_MISSING_PAYLOAD = 4
+        RESPONSE_INVALID_TOKEN_SIZE = 5
+        RESPONSE_INVALID_TOPIC_SIZE = 6
+        RESPONSE_INVALID_PAYLOAD_SIZE = 7
+        RESPONSE_INVALID_TOKEN = 8
+        RESPONSE_SHUTDOWN = 10
+        RESPONSE_UNKNOWN = 255
+
+        WAIT_READ_TIMEOUT_SEC = 10
+        ERROR_RESPONSE_LENGTH = 6
+        ERROR_RESPONSE_FORMAT = (
+            '!'   # network big-endian
+            'B'   # command
+            'B'   # status
+            'I'   # identifier
+        )
+
+        def __init__(self, apnsConnection):
+            super(APNSNotificationWrapper.ErrorResponseHandlerWorker, self).__init__()
+            self.apnsConnection = apnsConnection
+            self.close_signal = False
+
+        def close(self):
+            self.close_signal = True
+
+        def run(self):
+            while True:
+                try:
+                    if self._close_signal:
+                        _logger.debug("received close thread signal")
+                        break
+
+                    rlist, _, _ = select.select([self.apnsConnection.context().connectionContext], [], [], self.WAIT_READ_TIMEOUT_SEC)
+                    if len(rlist) > 0:
+                        error = None
+                        data = self.apnsConnection.read(blockSize=self.ERROR_RESPONSE_LENGTH)
+                        if len(data) == self.ERROR_RESPONSE_LENGTH:
+                            command, status, identifier = struct.unpack(self.ERROR_RESPONSE_FORMAT, data)
+                            if command == 8:
+                                error = (status, identifier)
+                                _logger.info("got error response from APNs:" + str(error))
+                                # TODO: resend
+
+                        if len(data) == 0:
+                            _logger.warning("read socket got 0 bytes data")
+
+                        self.apnsConnection.close()
+
+                except socket_error as e: # Connection reset by APNs
+                    _logger.exception("exception occur when reading APNs error response: " + str(type(e)) + ": " + str(e))
+                    self.apnsConnection.close()
+                    continue
+
+                time.sleep(0.1)
+
+            self.apnsConnection.close()
+            _logger.debug("error response handler worker closed")
 
 class APNSNotification(object):
     """
